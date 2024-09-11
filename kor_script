@@ -1,0 +1,221 @@
+schema = Object(
+    id="personal_info",
+    description="Personal information about a given person.",
+    attributes=[
+        Text(
+            id="first_name",
+            description="The first name of the person",
+            examples=[("John Smith went to the store", "John")],
+        ),
+        Text(
+            id="last_name",
+            description="The last name of the person",
+            examples=[("John Smith went to the store", "Smith")],
+        ),
+        Number(
+            id="age",
+            description="The age of the person in years.",
+            examples=[("23 years old", "23"), ("I turned three on sunday", "3")],
+        ),
+    ],
+    examples=[
+        (
+            "John Smith was 23 years old. He was very tall. He knew Jane Doe. She was 5 years old.",
+            [
+                {"first_name": "John", "last_name": "Smith", "age": 23},
+                {"first_name": "Jane", "last_name": "Doe", "age": 5},
+            ],
+        )
+    ],
+    many=True,
+)
+
+
+chain = create_extraction_chain(llm, schema)
+
+
+
+print(chain.prompt.format_prompt(text="[user input]").to_string())
+
+
+
+#####################################################################################################################################################################################################
+
+
+chain.predict_and_parse(text="David Jones was 34 years old a long time ago.")["data"]
+
+
+
+
+########################################################################################## Nested Objects and JSON ##########################################################################################
+
+
+from_address = Object(
+    id="from_address",
+    description="Person moved away from this address",
+    attributes=[
+        Text(id="street"),
+        Text(id="city"),
+        Text(id="state"),
+        Text(id="zipcode"),
+        Text(id="country", description="A country in the world; e.g., France."),
+    ],
+    examples=[
+        (
+            "100 Main St, Boston, MA, 23232, USA",
+            {
+                "street": "100 Marlo St",
+                "city": "Boston",
+                "state": "MA",
+                "zipcode": "23232",
+                "country": "USA",
+            },
+        )
+    ],
+)
+
+to_address = from_address.replace(
+    id="to_address", description="Address to which the person is moving"
+)
+
+schema = Object(
+    id="information",
+    attributes=[
+        Text(
+            id="person_name",
+            description="The full name of the person or partial name",
+            examples=[("John Smith was here", "John Smith")],
+        ),
+        from_address,
+        to_address,
+    ],
+    many=True,
+)
+
+chain = create_extraction_chain(
+    llm, schema, encoder_or_encoder_class="json", input_formatter=None
+)
+print(chain.prompt.format_prompt(text="[user input]").to_string())
+
+########################################################################################## Text & Docs ##########################################################################################
+
+doc = Document(page_content=input_text)
+
+llm = ChatOpenAI(
+     model_name="gpt-3.5-turbo",
+    temperature=0,
+)
+
+class Restaurant(BaseModel):
+    name: str = Field(
+        description="The name of the restaurant",
+    )
+    location: Optional[str] = Field(
+        description="City and or country, the place where the restaurant is",
+    )
+    style: Optional[str] = Field(
+        description="The types of cusine that is served at the restaurant",
+    )
+    top_dish: Optional[str] = Field(
+        description="The top dish that people love the most",
+    )
+
+    @validator("name")
+    def name_must_not_be_empty(cls, v):
+        if not v:
+            raise ValueError("Name must not be empty")
+        return v
+
+
+schema, extraction_validator = from_pydantic(
+    Restaurant,
+    description="Extract information about restaurants including their name, location, style and dishes.",
+    examples=[
+        (
+            "My first fav meal was at a restaurant called Burnt Ends in Singapore.",
+            {"name": "Burnt Ends", "location": "Singapore"},
+        )
+    ],
+    many=True,
+)
+
+
+chain = create_extraction_chain(
+    llm,
+    schema,
+    encoder_or_encoder_class="csv",
+    validator=extraction_validator,
+    input_formatter="triple_quotes",
+)
+
+print(chain.prompt.format_prompt(text="[user input]").to_string())
+
+
+
+with get_openai_callback() as cb:
+    document_extraction_results = await extract_from_documents(
+        chain, split_docs, max_concurrency=5, use_uid=False, return_exceptions=True
+    )
+    print(f"Total Tokens: {cb.total_tokens}")
+    print(f"Prompt Tokens: {cb.prompt_tokens}")
+    print(f"Completion Tokens: {cb.completion_tokens}")
+    print(f"Successful Requests: {cb.successful_requests}")
+    print(f"Total Cost (USD): ${cb.total_cost}")
+
+
+document_extraction_results
+
+########################################################################################## Split Text ##########################################################################################
+def split_conversation(filename, max_tokens=1024):
+    """
+    Load a conversation from a file and split it into sections of approximately 2048 tokens.
+
+    Parameters:
+    filename (str): The name of the file to read the conversation from.
+    max_tokens (int): The maximum number of tokens per section.
+
+    Returns:
+    list: A list of strings, where each string is a section of the conversation.
+    """
+    with open(filename, 'r') as f:
+        conversation = f.read()
+
+    # Split the conversation into turns
+    turns = conversation.split("\n\n")
+
+    sections = []
+    section = ""
+
+    for turn in turns:
+        # If adding the next turn would exceed the maximum number of tokens,
+        # add the current section to the list and start a new section
+        if len(section.split()) + len(turn.split()) > max_tokens:
+            sections.append(section.strip())
+            section = ""
+
+        # Add the turn to the current section
+        section += f"{turn}\n\n"
+
+    # Add the last section to the list
+    sections.append(section.strip())
+
+    return sections
+
+
+restaurant_schema = Object(
+    id="restaurant",
+    description=(
+        "People are talking about restaurants names and dishes as well as qualities of the restaturant"
+    ),
+    attributes=[
+        Text(
+            id="name",
+            description="The name of the restaurant"
+        )
+    ],
+    examples=[("We went for a quick bite at McDonalds",[{"name": "McDonalds"}]),
+            ("I just love the steaks at Mortons",[{"name": "Mortons"}]),
+            ("We already have a booking at The Eatery so can't goto Mortons",[{"name": "The Eatery"},{"name": "Mortons"}])
+            ],
+    many=True,
+)
